@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-figlet}",
+            "name": "Debug figlet",
+            "target": "figlet",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug figlet"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:swift-figlet}",
+            "name": "Release figlet",
+            "target": "figlet",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release figlet"
+        }
+    ]
+}
