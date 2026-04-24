@@ -79,7 +79,7 @@ public struct FigletFontLibrary: Sendable {
     }
 
     return try FigletFont.parse(
-      data: String(decoding: entry.data, as: UTF8.self),
+      data: entry.data,
       name: entry.name
     )
   }
@@ -339,7 +339,7 @@ public struct FigletFont: Sendable {
   }
 
   private static func load(filePath: String, fallbackName: String) throws -> FigletFont {
-    let data = try readUTF8File(at: filePath)
+    let data = try readFile(at: filePath)
     return try parse(data: data, name: fallbackName)
   }
 
@@ -348,7 +348,7 @@ public struct FigletFont: Sendable {
       return identifier
     }
 
-    for ext in ["flf", "tlf"] {
+    for ext in supportedFontExtensions {
       let candidate = "\(identifier).\(ext)"
       if fileExists(at: candidate) {
         return candidate
@@ -364,7 +364,7 @@ public struct FigletFont: Sendable {
       return fileExists(at: directPath) ? directPath : nil
     }
 
-    for ext in ["flf", "tlf"] {
+    for ext in supportedFontExtensions {
       let candidate = pathByAppending(directory, "\(identifier).\(ext)")
       if fileExists(at: candidate) {
         return candidate
@@ -394,7 +394,15 @@ public struct FigletFont: Sendable {
     return uniquePaths(directories).filter(isDirectory(at:))
   }
 
-  fileprivate static func parse(data: String, name: String) throws -> FigletFont {
+  fileprivate static func parse(data: [UInt8], name: String) throws -> FigletFont {
+    if data.starts(with: theDrawMagic) {
+      return try parseTheDrawFont(data: data, name: name)
+    }
+
+    return try parseFigletFont(data: String(decoding: data, as: UTF8.self), name: name)
+  }
+
+  private static func parseFigletFont(data: String, name: String) throws -> FigletFont {
     let sanitized = data.sanitizedFontData()
 
     let lines = sanitized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
@@ -521,7 +529,171 @@ public struct FigletFont: Sendable {
     self.characters = characters
     self.widths = widths
   }
+
+  private static let theDrawMagic = Array("\u{0013}TheDraw FONTS file\u{001A}".utf8)
+  private static let theDrawCharacters = Array(
+    "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+      .unicodeScalars
+      .map { Int($0.value) })
+
+  private static func parseTheDrawFont(data: [UInt8], name: String) throws -> FigletFont {
+    let dataStart = 233
+    guard data.count >= dataStart else {
+      throw FigletError.invalidFont("\(name) is not a valid TheDraw font")
+    }
+    guard data[41] == 2 else {
+      throw FigletError.invalidFont("\(name) uses an unsupported TheDraw font type")
+    }
+
+    let spacing = Int(data[42])
+    let offsets = (0..<theDrawCharacters.count).map { index in
+      readLittleEndianUInt16(from: data, at: 45 + index * 2)
+    }
+
+    var fontHeight = 0
+    for offset in offsets where offset != 0xFFFF {
+      let glyphStart = dataStart + Int(offset)
+      guard glyphStart + 1 < data.count else {
+        throw FigletError.invalidFont("\(name) contains an invalid TheDraw glyph offset")
+      }
+      fontHeight = max(fontHeight, Int(data[glyphStart + 1]))
+    }
+
+    var characters: [Int: [String]] = [:]
+    var widths: [Int: Int] = [:]
+
+    for (index, offset) in offsets.enumerated() where offset != 0xFFFF {
+      let glyph = try parseTheDrawGlyph(
+        data: data,
+        dataStart: dataStart,
+        offset: Int(offset),
+        fontHeight: fontHeight,
+        spacing: spacing,
+        fontName: name
+      )
+      let codePoint = theDrawCharacters[index]
+      characters[codePoint] = glyph.rows
+      widths[codePoint] = glyph.width
+    }
+
+    return FigletFont(
+      name: name,
+      height: fontHeight,
+      baseline: fontHeight,
+      hardBlank: " ",
+      printDirection: 0,
+      smushMode: 0,
+      comment: theDrawFontName(from: data) ?? "",
+      characters: characters,
+      widths: widths
+    )
+  }
+
+  private static func parseTheDrawGlyph(
+    data: [UInt8],
+    dataStart: Int,
+    offset: Int,
+    fontHeight: Int,
+    spacing: Int,
+    fontName: String
+  ) throws -> (width: Int, rows: [String]) {
+    let glyphStart = dataStart + offset
+    guard glyphStart + 1 < data.count else {
+      throw FigletError.invalidFont("\(fontName) contains an invalid TheDraw glyph offset")
+    }
+
+    let glyphWidth = Int(data[glyphStart])
+    let glyphHeight = Int(data[glyphStart + 1])
+    let renderedWidth = glyphWidth + spacing
+    var cells = Array(
+      repeating: Array(repeating: Character(" "), count: renderedWidth),
+      count: fontHeight
+    )
+
+    var row = 0
+    var column = 0
+    var index = glyphStart + 2
+
+    while index < data.count {
+      let byte = data[index]
+      index += 1
+
+      if byte == 0 {
+        break
+      }
+
+      if byte == 13 {
+        row += 1
+        column = 0
+        continue
+      }
+
+      guard index < data.count else {
+        throw FigletError.invalidFont("\(fontName) contains a truncated TheDraw glyph")
+      }
+      index += 1
+
+      if row < min(glyphHeight, fontHeight), column < glyphWidth {
+        cells[row][column] = theDrawCharacter(for: byte)
+      }
+      column += 1
+    }
+
+    return (renderedWidth, cells.map { String($0) })
+  }
+
+  private static func readLittleEndianUInt16(from data: [UInt8], at index: Int) -> Int {
+    Int(data[index]) | (Int(data[index + 1]) << 8)
+  }
+
+  private static func theDrawFontName(from data: [UInt8]) -> String? {
+    let nameLength = Int(data[24])
+    guard nameLength > 0 else {
+      return nil
+    }
+
+    let upperBound = min(25 + nameLength, 41, data.count)
+    let bytes = data[25..<upperBound].prefix { $0 != 0 }
+    let characters = bytes.map(theDrawCharacter)
+    return characters.isEmpty ? nil : String(characters)
+  }
+
+  private static func theDrawCharacter(for byte: UInt8) -> Character {
+    if byte < 0x20 {
+      return " "
+    }
+
+    if byte < 0x7F {
+      return Character(UnicodeScalar(Int(byte))!)
+    }
+
+    return Character(cp437Scalars[Int(byte) - 0x7F])
+  }
 }
+
+private let supportedFontExtensions = ["flf", "tlf", "tdf"]
+
+private let cp437Scalars: [UnicodeScalar] = [
+  "\u{2302}", "\u{00C7}", "\u{00FC}", "\u{00E9}", "\u{00E2}", "\u{00E4}", "\u{00E0}",
+  "\u{00E5}", "\u{00E7}", "\u{00EA}", "\u{00EB}", "\u{00E8}", "\u{00EF}", "\u{00EE}",
+  "\u{00EC}", "\u{00C4}", "\u{00C5}", "\u{00C9}", "\u{00E6}", "\u{00C6}", "\u{00F4}",
+  "\u{00F6}", "\u{00F2}", "\u{00FB}", "\u{00F9}", "\u{00FF}", "\u{00D6}", "\u{00DC}",
+  "\u{00A2}", "\u{00A3}", "\u{00A5}", "\u{20A7}", "\u{0192}", "\u{00E1}", "\u{00ED}",
+  "\u{00F3}", "\u{00FA}", "\u{00F1}", "\u{00D1}", "\u{00AA}", "\u{00BA}", "\u{00BF}",
+  "\u{2310}", "\u{00AC}", "\u{00BD}", "\u{00BC}", "\u{00A1}", "\u{00AB}", "\u{00BB}",
+  "\u{2591}", "\u{2592}", "\u{2593}", "\u{2502}", "\u{2524}", "\u{2561}", "\u{2562}",
+  "\u{2556}", "\u{2555}", "\u{2563}", "\u{2551}", "\u{2557}", "\u{255D}", "\u{255C}",
+  "\u{255B}", "\u{2510}", "\u{2514}", "\u{2534}", "\u{252C}", "\u{251C}", "\u{2500}",
+  "\u{253C}", "\u{255E}", "\u{255F}", "\u{255A}", "\u{2554}", "\u{2569}", "\u{2566}",
+  "\u{2560}", "\u{2550}", "\u{256C}", "\u{2567}", "\u{2568}", "\u{2564}", "\u{2565}",
+  "\u{2559}", "\u{2558}", "\u{2552}", "\u{2553}", "\u{256B}", "\u{256A}", "\u{2518}",
+  "\u{250C}", "\u{2588}", "\u{2584}", "\u{258C}", "\u{2590}", "\u{2580}", "\u{03B1}",
+  "\u{00DF}", "\u{0393}", "\u{03C0}", "\u{03A3}", "\u{03C3}", "\u{00B5}", "\u{03C4}",
+  "\u{03A6}", "\u{0398}", "\u{03A9}", "\u{03B4}", "\u{221E}", "\u{03C6}", "\u{03B5}",
+  "\u{2229}", "\u{2261}", "\u{00B1}", "\u{2265}", "\u{2264}", "\u{2320}", "\u{2321}",
+  "\u{00F7}", "\u{2248}", "\u{00B0}", "\u{2219}", "\u{00B7}", "\u{221A}", "\u{207F}",
+  "\u{00B2}", "\u{25A0}", "\u{00A0}",
+]
 
 private func parseGlyphIdentifier(_ token: String) -> Int? {
   if token.lowercased().hasPrefix("0x") {
@@ -1152,7 +1324,7 @@ private func stripEndMarker(from line: String, marker: Character) -> String {
     []
   }
 
-  private func readUTF8File(at path: String) throws -> String {
+  private func readFile(at path: String) throws -> [UInt8] {
     throw FigletError.invalidConfiguration(wasiExternalFontAccessError)
   }
 
@@ -1196,7 +1368,7 @@ private func stripEndMarker(from line: String, marker: Character) -> String {
     return entries
   }
 
-  private func readUTF8File(at path: String) throws -> String {
+  private func readFile(at path: String) throws -> [UInt8] {
     guard let file = unsafe fopen(path, "rb") else {
       throw FigletError.invalidFont("unable to read font at \(path)")
     }
@@ -1219,7 +1391,7 @@ private func stripEndMarker(from line: String, marker: Character) -> String {
       unsafe fread(bytes.baseAddress, 1, bufferCount, file)
     }
 
-    return String(decoding: buffer.prefix(bytesRead), as: UTF8.self)
+    return Array(buffer.prefix(bytesRead))
   }
 
   private func environmentValue(named name: String) -> String? {
@@ -1380,7 +1552,7 @@ extension String {
   }
 
   fileprivate var hasSupportedFontExtension: Bool {
-    hasSuffix(".flf") || hasSuffix(".tlf")
+    supportedFontExtensions.contains { hasSuffix(".\($0)") }
   }
 }
 

@@ -1,3 +1,4 @@
+import Foundation
 import EmbeddedFonts
 import SwiftFiglet
 import Testing
@@ -6,6 +7,7 @@ private let repositoryRoot =
   "/" + #filePath.split(separator: "/").dropLast(3).joined(separator: "/")
 private let testDirectory = "/" + #filePath.split(separator: "/").dropLast().joined(separator: "/")
 private let bundledFontsDirectory = repositoryRoot + "/Sources/swift-figlet/Resources/Fonts"
+private let fontsDirectory = repositoryRoot + "/Fonts"
 private let testOnlyFontData = #"""
   flf2a$ 1 1 1 0 0
   @@
@@ -104,6 +106,13 @@ private let testOnlyFontData = #"""
   @@
   @@
   """# + "\n"
+private let asciiTheDrawOutput = #"""
+         _
+  __ _  | |___    ___
+ / _  | | `_  \  / __|
+| (_) | | (_) | | (__
+ \__,_| |_,___/  \___|
+"""#
 
 @Test func loadsExternalFontFiles() throws {
   let font = try FigletFont(filePath: testDirectory + "/Fixtures/TestOnly.flf")
@@ -111,6 +120,13 @@ private let testOnlyFontData = #"""
   let output = try figlet.render("0").strippingSurroundingNewlines()
 
   #expect(output == "0")
+}
+
+@Test func loadsExternalTheDrawFontFiles() throws {
+  let figlet = try Figlet(fontNamed: "ascii", searchDirectories: [fontsDirectory])
+  let output = try figlet.render("ABC").trimmingTrailingWhitespaceByLine()
+
+  #expect(output == asciiTheDrawOutput)
 }
 
 @Test func loadsFontsFromFontLibraryObjects() throws {
@@ -123,6 +139,20 @@ private let testOnlyFontData = #"""
   let output = try figlet.render("0").strippingSurroundingNewlines()
 
   #expect(output == "0")
+}
+
+@Test func loadsTheDrawFontsFromFontLibraryObjects() throws {
+  let fontData = try Data(contentsOf: URL(fileURLWithPath: fontsDirectory + "/ascii.tdf"))
+  let fontLibrary = FigletFontLibrary(
+    name: "TheDraw Fixtures",
+    fonts: ["ascii.tdf": Array(fontData)]
+  )
+
+  let figlet = try Figlet(fontNamed: "ascii.tdf", fontLibrary: fontLibrary)
+  let output = try figlet.render("ABC").trimmingTrailingWhitespaceByLine()
+
+  #expect(figlet.font.info == "ASCII")
+  #expect(output == asciiTheDrawOutput)
 }
 
 @Test func rendersEmbeddedStandardFontLibrary() throws {
@@ -160,4 +190,32 @@ private let testOnlyFontData = #"""
 @Test func embeddedFontEnumMatchesTheGeneratedLibrary() {
   #expect(
     EmbeddedFigletFont.allCases.map(\.rawValue) == EmbeddedFigletFont.library.fontNames)
+}
+
+extension FigletText {
+  fileprivate func trimmingTrailingWhitespaceByLine() -> String {
+    rawValue
+      .split(separator: "\n", omittingEmptySubsequences: false)
+      .map { String($0).trimmingTrailingFigletWhitespace() }
+      .joined(separator: "\n")
+      .trimmingTrailingFigletWhitespaceAndNewlines()
+  }
+}
+
+extension String {
+  fileprivate func trimmingTrailingFigletWhitespace() -> String {
+    var value = self
+    while let last = value.last, last == " " || last == "\t" {
+      value.removeLast()
+    }
+    return value
+  }
+
+  fileprivate func trimmingTrailingFigletWhitespaceAndNewlines() -> String {
+    var value = self
+    while let last = value.last, last == " " || last == "\t" || last == "\n" || last == "\r" {
+      value.removeLast()
+    }
+    return value
+  }
 }
