@@ -57,12 +57,29 @@ public struct FigletFontLibrary: Sendable {
   public let name: String?
 
   private let fonts: [String: [UInt8]]
+  private let names: [String]
 
   public init(name: String? = nil, fonts: [String: [UInt8]]) {
     self.name = name
-    self.fonts = fonts.reduce(into: [:]) { result, entry in
-      result[Self.normalizedFontName(for: entry.key)] = entry.value
+    let baseNameCounts = fonts.keys.reduce(into: [String: Int]()) { result, name in
+      result[Self.baseFontName(for: name), default: 0] += 1
     }
+
+    var lookupFonts: [String: [UInt8]] = [:]
+    var displayNames = Set<String>()
+    for (name, data) in fonts {
+      let displayName = Self.displayFontName(for: name, baseNameCounts: baseNameCounts)
+      displayNames.insert(displayName)
+      lookupFonts[displayName] = data
+      lookupFonts[name] = data
+
+      if name.hasSupportedFontExtension, lookupFonts[Self.baseFontName(for: name)] == nil {
+        lookupFonts[Self.baseFontName(for: name)] = data
+      }
+    }
+
+    self.fonts = lookupFonts
+    self.names = displayNames.sorted()
   }
 
   public init(name: String? = nil, fontData: [String: String]) {
@@ -70,7 +87,7 @@ public struct FigletFontLibrary: Sendable {
   }
 
   public var fontNames: [String] {
-    fonts.keys.sorted()
+    names
   }
 
   public func font(named identifier: String) throws -> FigletFont? {
@@ -89,15 +106,33 @@ public struct FigletFontLibrary: Sendable {
       return nil
     }
 
-    let normalizedIdentifier = Self.normalizedFontName(for: identifier)
-    guard let data = fonts[normalizedIdentifier] else {
+    let candidates =
+      identifier.hasSupportedFontExtension
+      ? [identifier, Self.baseFontName(for: identifier)]
+      : [identifier]
+    guard let matchedIdentifier = candidates.first(where: { fonts[$0] != nil }),
+      let data = fonts[matchedIdentifier]
+    else {
       return nil
     }
 
-    return (normalizedIdentifier, data)
+    return (Self.baseFontName(for: matchedIdentifier), data)
   }
 
-  private static func normalizedFontName(for identifier: String) -> String {
+  private static func displayFontName(
+    for identifier: String,
+    baseNameCounts: [String: Int]
+  ) -> String {
+    guard identifier.hasSupportedFontExtension,
+      baseNameCounts[baseFontName(for: identifier), default: 0] == 1
+    else {
+      return identifier
+    }
+
+    return baseFontName(for: identifier)
+  }
+
+  private static func baseFontName(for identifier: String) -> String {
     if identifier.hasSupportedFontExtension {
       return identifier.lastPathComponentWithoutExtension
     }

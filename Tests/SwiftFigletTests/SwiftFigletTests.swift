@@ -162,6 +162,23 @@ private let asciiTheDrawOutput = #"""
   #expect(output == " _   _ _ \n| | | (_)\n| |_| | |\n|  _  | |\n|_| |_|_|\n         \n")
 }
 
+@Test func rendersEmbeddedTheDrawFontLibrary() throws {
+  let figlet = try Figlet(embeddedFont: .ascii)
+  let output = try figlet.render("ABC").trimmingTrailingWhitespaceByLine()
+
+  #expect(figlet.font.info == "ASCII")
+  #expect(output == asciiTheDrawOutput)
+}
+
+@Test func rendersExtensionQualifiedEmbeddedTheDrawFontWhenNamesCollide() throws {
+  let figlet = try Figlet(fontNamed: "cosmic.tdf", fontLibrary: EmbeddedFigletFont.library)
+  let output = try figlet.render("ABC").strippingSurroundingNewlines()
+
+  #expect(EmbeddedFigletFont.allCases.contains(.cosmic))
+  #expect(EmbeddedFigletFont.allCases.contains(.cosmicTdf))
+  #expect(!output.isEmpty)
+}
+
 @Test func reportsLayoutMetricsForEmbeddedFonts() throws {
   let figlet = try Figlet(embeddedFont: .standard)
   let metrics = try figlet.layoutMetrics(for: "Hi")
@@ -185,6 +202,8 @@ private let asciiTheDrawOutput = #"""
   #expect(fonts.contains(.standard))
   #expect(fonts.contains(.banner))
   #expect(fonts.contains(.mono9))
+  #expect(fonts.contains(.ascii))
+  #expect(fonts.contains(.liquid))
 }
 
 @Test func embeddedFontEnumMatchesTheGeneratedLibrary() {
