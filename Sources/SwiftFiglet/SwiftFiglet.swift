@@ -510,7 +510,8 @@ private struct FigletSurfaceSerializer {
     if let background = style.background {
       codes.append(ansiBackgroundCode(for: background))
     }
-    return codes.isEmpty ? Self.ansiReset : "\u{001B}[\(codes.map(String.init).joined(separator: ";"))m"
+    return codes.isEmpty
+      ? Self.ansiReset : "\u{001B}[\(codes.map(String.init).joined(separator: ";"))m"
   }
 
   private func ansiForegroundCode(for color: FigletTerminalColor) -> Int {

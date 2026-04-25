@@ -1,10 +1,11 @@
 import Foundation
+public import SwiftFiglet
+
 #if canImport(Darwin)
   import Darwin
 #elseif canImport(Glibc)
   import Glibc
 #endif
-public import SwiftFiglet
 
 public enum FigletCLI {
   public static func main(
@@ -77,12 +78,14 @@ public enum FigletCLI {
     let output: String
     if options.stripSurroundingNewlines {
       renderedOutput = renderedOutput.strippedSurroundingNewlines()
-      output = renderedOutput.containsANSIStyles
+      output =
+        renderedOutput.containsANSIStyles
         ? renderedOutput.ansiDescription.trimmingTrailingNewline()
         : renderedOutput.description.trimmingTrailingNewline()
     } else if options.normalizeSurroundingNewlines {
       renderedOutput = renderedOutput.normalizedSurroundingNewlines()
-      output = renderedOutput.containsANSIStyles
+      output =
+        renderedOutput.containsANSIStyles
         ? renderedOutput.ansiDescription
         : renderedOutput.description
     } else if renderedOutput.containsANSIStyles {
