@@ -8,6 +8,20 @@ struct FontEntry {
 }
 
 let supportedExtensions = ["flf", "tlf", "tdf"]
+let bundledFontNames = [
+  "standard",
+  "slant",
+  "small",
+  "doom",
+  "ansi-shadow",
+  "calvin-sm",
+  "208",
+  "pagga",
+  "bloodyx",
+  "cnerip",
+  "3d",
+  "sm-block",
+]
 let swiftKeywords = [
   "actor",
   "as",
@@ -189,6 +203,31 @@ func makeFontEntries(from fontFiles: [URL]) -> [FontEntry] {
   return entries
 }
 
+func bundledFontFiles(from fontFiles: [URL], requestedFontNames: [String]) throws -> [URL] {
+  var remainingFontFiles = fontFiles
+  var bundledFontFiles: [URL] = []
+  bundledFontFiles.reserveCapacity(requestedFontNames.count)
+
+  for requestedFontName in requestedFontNames {
+    guard
+      let index = remainingFontFiles.firstIndex(where: { fileURL in
+        fileURL.lastPathComponent == requestedFontName
+          || fileURL.deletingPathExtension().lastPathComponent == requestedFontName
+      })
+    else {
+      throw NSError(
+        domain: "generate_embedded_font_library",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Missing bundled font '\(requestedFontName)'"]
+      )
+    }
+
+    bundledFontFiles.append(remainingFontFiles.remove(at: index))
+  }
+
+  return bundledFontFiles
+}
+
 func chunked(_ value: String, maxLength: Int) -> [String] {
   guard !value.isEmpty else {
     return [""]
@@ -263,7 +302,8 @@ guard !discoveredFontFiles.isEmpty else {
   )
 }
 
-let fontEntries = makeFontEntries(from: discoveredFontFiles)
+let fontEntries = makeFontEntries(
+  from: try bundledFontFiles(from: discoveredFontFiles, requestedFontNames: bundledFontNames))
 let outputDirectory = outputFile.deletingLastPathComponent()
 try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
 

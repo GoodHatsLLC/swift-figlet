@@ -129,6 +129,60 @@ private let asciiTheDrawOutput = #"""
   #expect(output == asciiTheDrawOutput)
 }
 
+@Test func preservesTheDrawColorAttributesAsANSI() throws {
+  let figlet = try Figlet(fontNamed: "208", searchDirectories: [fontsDirectory])
+  let rendered = try figlet.render("x")
+  let ansiOutput = rendered.ansiDescription
+
+  #expect(rendered.containsANSIStyles)
+  #expect(ansiOutput.contains("\u{001B}[31;40m"))
+  #expect(ansiOutput.contains("\u{001B}[91;41m"))
+  #expect(ansiOutput.strippingANSISequences() == rendered.description)
+}
+
+@Test func rendersPublicSurfaceEquivalentToFigletText() throws {
+  let figlet = try Figlet(embeddedFont: .standard)
+  let text = try figlet.render("Hi")
+  let surface = try figlet.renderSurface("Hi")
+
+  #expect(surface.render() == text.description)
+  #expect(surface.description == text.description)
+  #expect(surface.size == .init(width: 9, height: 6))
+  #expect(!surface.containsStyles)
+  #expect(surface.rows.count == 6)
+}
+
+@Test func appliesSurfaceStyleFiltersWithoutChangingGlyphs() throws {
+  let figlet = try Figlet(embeddedFont: .standard)
+  let surface = try figlet.renderSurface("Hi")
+  let styled = surface.applying(.fillStyle(.init(foreground: .green)))
+  let ansiOutput = styled.render(.ansi)
+
+  #expect(styled.render() == surface.render())
+  #expect(styled.containsStyles)
+  #expect(ansiOutput.contains("\u{001B}[32m"))
+  #expect(ansiOutput.strippingANSISequences() == surface.render())
+
+  let stripped = styled.applying(.stripStyles)
+  #expect(!stripped.containsStyles)
+  #expect(stripped.render(.ansi) == surface.render())
+}
+
+@Test func surfaceFiltersCanOverrideTheDrawAuthoredStyles() throws {
+  let figlet = try Figlet(fontNamed: "208", searchDirectories: [fontsDirectory])
+  let surface = try figlet.renderSurface("x")
+  let overridden = surface
+    .applying(.stripStyles)
+    .applying(.overrideStyle(.init(foreground: .cyan)))
+  let ansiOutput = overridden.render(.ansi)
+
+  #expect(surface.containsStyles)
+  #expect(overridden.render() == surface.render())
+  #expect(ansiOutput.contains("\u{001B}[36m"))
+  #expect(!ansiOutput.contains("\u{001B}[31;40m"))
+  #expect(ansiOutput.strippingANSISequences() == surface.render())
+}
+
 @Test func loadsFontsFromFontLibraryObjects() throws {
   let fontLibrary = FigletFontLibrary(
     name: "Test Fixtures",
@@ -163,20 +217,22 @@ private let asciiTheDrawOutput = #"""
 }
 
 @Test func rendersEmbeddedTheDrawFontLibrary() throws {
-  let figlet = try Figlet(embeddedFont: .ascii)
-  let output = try figlet.render("ABC").trimmingTrailingWhitespaceByLine()
+  let figlet = try Figlet(embeddedFont: .font208)
+  let rendered = try figlet.render("x")
 
-  #expect(figlet.font.info == "ASCII")
-  #expect(output == asciiTheDrawOutput)
+  #expect(figlet.font.info == "208")
+  #expect(rendered.containsANSIStyles)
+  #expect(rendered.ansiDescription.strippingANSISequences() == rendered.description)
 }
 
-@Test func rendersExtensionQualifiedEmbeddedTheDrawFontWhenNamesCollide() throws {
-  let figlet = try Figlet(fontNamed: "cosmic.tdf", fontLibrary: EmbeddedFigletFont.library)
-  let output = try figlet.render("ABC").strippingSurroundingNewlines()
+@Test func rendersCuratedEmbeddedTheDrawFonts() throws {
+  for embeddedFont in [EmbeddedFigletFont.font208, .bloodyx, .cnerip] {
+    let figlet = try Figlet(embeddedFont: embeddedFont)
+    let rendered = try figlet.render("x")
 
-  #expect(EmbeddedFigletFont.allCases.contains(.cosmic))
-  #expect(EmbeddedFigletFont.allCases.contains(.cosmicTdf))
-  #expect(!output.isEmpty)
+    #expect(rendered.containsANSIStyles)
+    #expect(!rendered.description.isEmpty)
+  }
 }
 
 @Test func reportsLayoutMetricsForEmbeddedFonts() throws {
@@ -196,14 +252,21 @@ private let asciiTheDrawOutput = #"""
 }
 
 @Test func listsEmbeddedFonts() {
-  let fonts = EmbeddedFigletFont.allCases
-
-  #expect(fonts.contains(.slant))
-  #expect(fonts.contains(.standard))
-  #expect(fonts.contains(.banner))
-  #expect(fonts.contains(.mono9))
-  #expect(fonts.contains(.ascii))
-  #expect(fonts.contains(.liquid))
+  #expect(
+    EmbeddedFigletFont.allCases.map(\.rawValue) == [
+      "208",
+      "3d",
+      "ansi-shadow",
+      "bloodyx",
+      "calvin-sm",
+      "cnerip",
+      "doom",
+      "pagga",
+      "slant",
+      "sm-block",
+      "small",
+      "standard",
+    ])
 }
 
 @Test func embeddedFontEnumMatchesTheGeneratedLibrary() {
@@ -236,5 +299,25 @@ extension String {
       value.removeLast()
     }
     return value
+  }
+
+  fileprivate func strippingANSISequences() -> String {
+    var output = ""
+    var iterator = makeIterator()
+
+    while let character = iterator.next() {
+      guard character == "\u{001B}" else {
+        output.append(character)
+        continue
+      }
+
+      guard iterator.next() == "[" else {
+        continue
+      }
+
+      while let escapeCharacter = iterator.next(), escapeCharacter != "m" {}
+    }
+
+    return output
   }
 }

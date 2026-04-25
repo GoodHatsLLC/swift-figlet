@@ -143,16 +143,39 @@ public struct FigletFontLibrary: Sendable {
 
 public struct FigletText: CustomStringConvertible, Equatable, Sendable {
   public let rawValue: String
+  let surface: FigletSurface?
 
   public init(_ rawValue: String) {
     self.rawValue = rawValue
+    self.surface = nil
+  }
+
+  public init(surface: FigletSurface) {
+    self.rawValue = surface.render(.plain)
+    self.surface = surface
   }
 
   public var description: String {
     rawValue
   }
 
+  public static func == (lhs: FigletText, rhs: FigletText) -> Bool {
+    lhs.rawValue == rhs.rawValue
+  }
+
+  public var containsANSIStyles: Bool {
+    surface?.containsStyles ?? false
+  }
+
+  public var ansiDescription: String {
+    surface?.render(.ansi) ?? rawValue
+  }
+
   public func reversed() -> FigletText {
+    if let surface {
+      return FigletText(surface: surface.mapCharacters(Self.reverseMap).reversed())
+    }
+
     let rows = rawValue.split(separator: "\n", omittingEmptySubsequences: false)
     let reversedRows = rows.map { row in
       String(row.map(Self.reverseMap).reversed())
@@ -161,6 +184,10 @@ public struct FigletText: CustomStringConvertible, Equatable, Sendable {
   }
 
   public func flipped() -> FigletText {
+    if let surface {
+      return FigletText(surface: surface.mapCharacters(Self.flipMap).flipped())
+    }
+
     let rows = rawValue.split(separator: "\n", omittingEmptySubsequences: false)
     let flippedRows = rows.reversed().map { row in
       String(row.map(Self.flipMap))
@@ -183,8 +210,24 @@ public struct FigletText: CustomStringConvertible, Equatable, Sendable {
     return output.joined(separator: "\n").trimmingTrailingWhitespaceAndNewlines()
   }
 
+  public func strippedSurroundingNewlines() -> FigletText {
+    guard let surface else {
+      return FigletText(strippingSurroundingNewlines())
+    }
+
+    return FigletText(surface: surface.strippingSurroundingNewlines())
+  }
+
   public func normalizingSurroundingNewlines() -> String {
     "\n\(strippingSurroundingNewlines())\n"
+  }
+
+  public func normalizedSurroundingNewlines() -> FigletText {
+    guard let surface else {
+      return FigletText(normalizingSurroundingNewlines())
+    }
+
+    return FigletText(surface: surface.normalizingSurroundingNewlines())
   }
 
   private static func reverseMap(_ character: Character) -> Character {
@@ -237,6 +280,265 @@ public struct FigletLayoutMetrics: Equatable, Sendable {
   }
 }
 
+public enum FigletTerminalColor: Int, CaseIterable, Sendable {
+  case black = 0
+  case blue = 1
+  case green = 2
+  case cyan = 3
+  case red = 4
+  case magenta = 5
+  case yellow = 6
+  case white = 7
+  case brightBlack = 8
+  case brightBlue = 9
+  case brightGreen = 10
+  case brightCyan = 11
+  case brightRed = 12
+  case brightMagenta = 13
+  case brightYellow = 14
+  case brightWhite = 15
+}
+
+public struct FigletStyle: Equatable, Sendable {
+  public static let plain = FigletStyle()
+
+  public var foreground: FigletTerminalColor?
+  public var background: FigletTerminalColor?
+
+  public init(
+    foreground: FigletTerminalColor? = nil,
+    background: FigletTerminalColor? = nil
+  ) {
+    self.foreground = foreground
+    self.background = background
+  }
+
+  var isPlain: Bool {
+    foreground == nil && background == nil
+  }
+
+  static func theDrawAttribute(_ rawAttribute: UInt8) -> FigletStyle {
+    let foreground = FigletTerminalColor(rawValue: Int(rawAttribute & 0x0F))
+    let background = FigletTerminalColor(rawValue: Int((rawAttribute & 0xF0) >> 4))
+    return FigletStyle(foreground: foreground, background: background)
+  }
+}
+
+public struct FigletCell: Equatable, Sendable {
+  public var character: Character
+  public var style: FigletStyle
+
+  static let space = FigletCell(character: " ")
+
+  public init(character: Character, style: FigletStyle = .plain) {
+    self.character = character
+    self.style = style
+  }
+
+  var hasStyle: Bool {
+    !style.isPlain
+  }
+}
+
+public enum FigletSurfaceFormat: Sendable {
+  case plain
+  case ansi
+}
+
+public enum FigletSurfaceFilter: Sendable {
+  case stripStyles
+  case fillStyle(FigletStyle)
+  case overrideStyle(FigletStyle)
+}
+
+public struct FigletSurface: CustomStringConvertible, Equatable, Sendable {
+  public let rows: [[FigletCell]]
+
+  public init(rows: [[FigletCell]]) {
+    self.rows = rows
+  }
+
+  public var description: String {
+    render(.plain)
+  }
+
+  public var containsStyles: Bool {
+    rows.contains { row in row.contains(where: \.hasStyle) }
+  }
+
+  public var size: FigletSize {
+    measureCellRows(rows)
+  }
+
+  public func render(_ format: FigletSurfaceFormat = .plain) -> String {
+    FigletSurfaceSerializer(format: format).render(self)
+  }
+
+  public func applying(_ filter: FigletSurfaceFilter) -> FigletSurface {
+    switch filter {
+    case .stripStyles:
+      return mapCells { cell in
+        FigletCell(character: cell.character)
+      }
+    case .fillStyle(let style):
+      return mapCells { cell in
+        guard !cell.hasStyle, !cell.character.isFigletWhitespace else {
+          return cell
+        }
+        var styledCell = cell
+        styledCell.style = style
+        return styledCell
+      }
+    case .overrideStyle(let style):
+      return mapCells { cell in
+        guard !cell.character.isFigletWhitespace else {
+          return cell
+        }
+        var styledCell = cell
+        styledCell.style = style
+        return styledCell
+      }
+    }
+  }
+
+  public func applying(_ filters: [FigletSurfaceFilter]) -> FigletSurface {
+    filters.reduce(self) { surface, filter in
+      surface.applying(filter)
+    }
+  }
+
+  func reversed() -> FigletSurface {
+    FigletSurface(rows: rows.map { Array($0.reversed()) })
+  }
+
+  func flipped() -> FigletSurface {
+    FigletSurface(rows: Array(rows.reversed()))
+  }
+
+  func mapCharacters(_ transform: (Character) -> Character) -> FigletSurface {
+    mapCells { cell in
+      var mappedCell = cell
+      mappedCell.character = transform(cell.character)
+      return mappedCell
+    }
+  }
+
+  func strippingSurroundingNewlines() -> FigletSurface {
+    var output: [[FigletCell]] = []
+    var sawContent = false
+
+    for row in rows {
+      if row.contains(where: { !$0.character.isFigletWhitespace }) || sawContent {
+        sawContent = true
+        output.append(row)
+      }
+    }
+
+    while let lastRow = output.last {
+      var trimmedRow = lastRow
+      while let lastCell = trimmedRow.last, lastCell.character.isFigletWhitespace {
+        trimmedRow.removeLast()
+      }
+
+      if trimmedRow.isEmpty {
+        output.removeLast()
+      } else {
+        output[output.count - 1] = trimmedRow
+        break
+      }
+    }
+
+    return FigletSurface(rows: output)
+  }
+
+  func normalizingSurroundingNewlines() -> FigletSurface {
+    var normalizedRows = strippingSurroundingNewlines().rows
+    if normalizedRows.isEmpty {
+      return FigletSurface(rows: [[], []])
+    }
+    normalizedRows.insert([], at: 0)
+    return FigletSurface(rows: normalizedRows)
+  }
+
+  private func mapCells(_ transform: (FigletCell) -> FigletCell) -> FigletSurface {
+    FigletSurface(rows: rows.map { row in row.map(transform) })
+  }
+}
+
+private struct FigletSurfaceSerializer {
+  static let ansiReset = "\u{001B}[0m"
+
+  let format: FigletSurfaceFormat
+
+  func render(_ surface: FigletSurface) -> String {
+    let renderedRows = surface.rows.map { row in
+      switch format {
+      case .plain:
+        return String(row.map(\.character))
+      case .ansi:
+        return ansiRowDescription(row)
+      }
+    }
+    return renderedRows.joined(separator: "\n") + (surface.rows.isEmpty ? "" : "\n")
+  }
+
+  private func ansiRowDescription(_ row: [FigletCell]) -> String {
+    var output = ""
+    var activeStyle = FigletStyle.plain
+
+    for cell in row {
+      if cell.style != activeStyle {
+        output += ansiEscape(for: cell.style)
+        activeStyle = cell.style
+      }
+
+      output.append(cell.character)
+    }
+
+    if !activeStyle.isPlain {
+      output += Self.ansiReset
+    }
+
+    return output
+  }
+
+  private func ansiEscape(for style: FigletStyle) -> String {
+    var codes: [Int] = []
+    if let foreground = style.foreground {
+      codes.append(ansiForegroundCode(for: foreground))
+    }
+    if let background = style.background {
+      codes.append(ansiBackgroundCode(for: background))
+    }
+    return codes.isEmpty ? Self.ansiReset : "\u{001B}[\(codes.map(String.init).joined(separator: ";"))m"
+  }
+
+  private func ansiForegroundCode(for color: FigletTerminalColor) -> Int {
+    [30, 34, 32, 36, 31, 35, 33, 37, 90, 94, 92, 96, 91, 95, 93, 97][color.rawValue]
+  }
+
+  private func ansiBackgroundCode(for color: FigletTerminalColor) -> Int {
+    [40, 44, 42, 46, 41, 45, 43, 47][min(color.rawValue, 7)]
+  }
+}
+
+struct FigletGlyph: Equatable, Sendable {
+  let width: Int
+  let rows: [[FigletCell]]
+
+  init(width: Int, rows: [[FigletCell]]) {
+    self.width = width
+    self.rows = rows
+  }
+
+  init(width: Int, plainRows: [String]) {
+    self.width = width
+    self.rows = plainRows.map { row in
+      row.map { FigletCell(character: $0) }
+    }
+  }
+}
+
 public struct FigletFont: Sendable {
   public static let defaultFontName = "standard"
 
@@ -248,7 +550,7 @@ public struct FigletFont: Sendable {
   public let smushMode: Int
   public let comment: String
 
-  let characters: [Int: [String]]
+  let glyphs: [Int: FigletGlyph]
   let widths: [Int: Int]
 
   public init(named name: String) throws {
@@ -485,13 +787,13 @@ public struct FigletFont: Sendable {
       commentLinesBuffer.append(try consumeLine(from: lines, index: &lineIndex))
     }
 
-    var characters: [Int: [String]] = [:]
+    var glyphs: [Int: FigletGlyph] = [:]
     var widths: [Int: Int] = [:]
 
     for codePoint in 32..<127 {
       let glyph = try consumeGlyph(from: lines, index: &lineIndex, height: height)
       if codePoint == 32 || !glyph.rows.joined().isEmpty {
-        characters[codePoint] = glyph.rows
+        glyphs[codePoint] = FigletGlyph(width: glyph.width, plainRows: glyph.rows)
         widths[codePoint] = glyph.width
       }
     }
@@ -504,7 +806,7 @@ public struct FigletFont: Sendable {
 
         let glyph = try consumeGlyph(from: lines, index: &lineIndex, height: height)
         if !glyph.rows.joined().isEmpty, let scalar = character.unicodeScalars.first {
-          characters[Int(scalar.value)] = glyph.rows
+          glyphs[Int(scalar.value)] = FigletGlyph(width: glyph.width, plainRows: glyph.rows)
           widths[Int(scalar.value)] = glyph.width
         }
       }
@@ -521,7 +823,7 @@ public struct FigletFont: Sendable {
 
         let glyph = try consumeGlyph(from: lines, index: &lineIndex, height: height)
         if !glyph.rows.joined().isEmpty {
-          characters[codePoint] = glyph.rows
+          glyphs[codePoint] = FigletGlyph(width: glyph.width, plainRows: glyph.rows)
           widths[codePoint] = glyph.width
         }
       }
@@ -538,7 +840,7 @@ public struct FigletFont: Sendable {
       printDirection: printDirection,
       smushMode: smushMode,
       comment: commentLinesBuffer.joined(separator: "\n"),
-      characters: characters,
+      glyphs: glyphs,
       widths: widths
     )
   }
@@ -551,7 +853,7 @@ public struct FigletFont: Sendable {
     printDirection: Int?,
     smushMode: Int,
     comment: String,
-    characters: [Int: [String]],
+    glyphs: [Int: FigletGlyph],
     widths: [Int: Int]
   ) {
     self.name = name
@@ -561,7 +863,7 @@ public struct FigletFont: Sendable {
     self.printDirection = printDirection
     self.smushMode = smushMode
     self.comment = comment
-    self.characters = characters
+    self.glyphs = glyphs
     self.widths = widths
   }
 
@@ -594,7 +896,7 @@ public struct FigletFont: Sendable {
       fontHeight = max(fontHeight, Int(data[glyphStart + 1]))
     }
 
-    var characters: [Int: [String]] = [:]
+    var glyphs: [Int: FigletGlyph] = [:]
     var widths: [Int: Int] = [:]
 
     for (index, offset) in offsets.enumerated() where offset != 0xFFFF {
@@ -607,7 +909,7 @@ public struct FigletFont: Sendable {
         fontName: name
       )
       let codePoint = theDrawCharacters[index]
-      characters[codePoint] = glyph.rows
+      glyphs[codePoint] = glyph
       widths[codePoint] = glyph.width
     }
 
@@ -619,7 +921,7 @@ public struct FigletFont: Sendable {
       printDirection: 0,
       smushMode: 0,
       comment: theDrawFontName(from: data) ?? "",
-      characters: characters,
+      glyphs: glyphs,
       widths: widths
     )
   }
@@ -631,7 +933,7 @@ public struct FigletFont: Sendable {
     fontHeight: Int,
     spacing: Int,
     fontName: String
-  ) throws -> (width: Int, rows: [String]) {
+  ) throws -> FigletGlyph {
     let glyphStart = dataStart + offset
     guard glyphStart + 1 < data.count else {
       throw FigletError.invalidFont("\(fontName) contains an invalid TheDraw glyph offset")
@@ -641,7 +943,7 @@ public struct FigletFont: Sendable {
     let glyphHeight = Int(data[glyphStart + 1])
     let renderedWidth = glyphWidth + spacing
     var cells = Array(
-      repeating: Array(repeating: Character(" "), count: renderedWidth),
+      repeating: Array(repeating: FigletCell.space, count: renderedWidth),
       count: fontHeight
     )
 
@@ -666,15 +968,19 @@ public struct FigletFont: Sendable {
       guard index < data.count else {
         throw FigletError.invalidFont("\(fontName) contains a truncated TheDraw glyph")
       }
+      let color = data[index]
       index += 1
 
       if row < min(glyphHeight, fontHeight), column < glyphWidth {
-        cells[row][column] = theDrawCharacter(for: byte)
+        cells[row][column] = FigletCell(
+          character: theDrawCharacter(for: byte),
+          style: .theDrawAttribute(color)
+        )
       }
       column += 1
     }
 
-    return (renderedWidth, cells.map { String($0) })
+    return FigletGlyph(width: renderedWidth, rows: cells)
   }
 
   private static func readLittleEndianUInt16(from data: [UInt8], at index: Int) -> Int {
@@ -824,18 +1130,22 @@ public struct Figlet: Sendable {
   }
 
   public func render(_ text: String) throws -> FigletText {
+    try FigletText(surface: renderSurface(text))
+  }
+
+  public func renderSurface(_ text: String) throws -> FigletSurface {
     guard configuration.width > 0 else {
       throw FigletError.invalidConfiguration("width must be greater than zero")
     }
 
-    var builder = FigletBuilder(
+    var layoutEngine = FigletLayoutEngine(
       text: text,
       font: font,
       direction: resolvedDirection,
       width: configuration.width,
       justification: resolvedJustification
     )
-    return try builder.render()
+    return try layoutEngine.renderSurface()
   }
 
   public func layoutMetrics(for text: String) throws -> FigletLayoutMetrics {
@@ -852,18 +1162,18 @@ public struct Figlet: Sendable {
 
     let minimumWidth = minimumRenderableWidth(for: text)
     let idealWidth = max(1, nonWrappingWidthUpperBound(for: text))
-    var builder = FigletBuilder(
+    var layoutEngine = FigletLayoutEngine(
       text: text,
       font: font,
       direction: resolvedDirection,
       width: idealWidth,
       justification: resolvedJustification
     )
-    let rows = try builder.renderRows()
+    let surface = try layoutEngine.renderSurface()
 
     return FigletLayoutMetrics(
       minimumWidth: minimumWidth,
-      idealSize: measureRows(rows)
+      idealSize: surface.size
     )
   }
 
@@ -946,7 +1256,7 @@ private enum ResolvedJustification: Sendable {
   case right
 }
 
-private struct FigletBuilder {
+private struct FigletLayoutEngine {
   private let text: [Int]
   private let font: FigletFont
   private let direction: ResolvedDirection
@@ -957,9 +1267,9 @@ private struct FigletBuilder {
   private var maxSmush = 0
   private var currentCharacterWidth = 0
   private var previousCharacterWidth = 0
-  private var blankMarkers: [([String], Int)] = []
-  private var productQueue: [[String]] = []
-  private var buffer: [String]
+  private var blankMarkers: [([[FigletCell]], Int)] = []
+  private var productQueue: [[[FigletCell]]] = []
+  private var buffer: [[FigletCell]]
 
   init(
     text: String,
@@ -973,14 +1283,10 @@ private struct FigletBuilder {
     self.direction = direction
     self.width = width
     self.justification = justification
-    self.buffer = Array(repeating: "", count: font.height)
+    self.buffer = Array(repeating: [], count: font.height)
   }
 
-  mutating func render() throws -> FigletText {
-    FigletText(formatProduct(try renderRows()))
-  }
-
-  mutating func renderRows() throws -> [String] {
+  mutating func renderSurface() throws -> FigletSurface {
     while iterator < text.count {
       try addCurrentCharacterToProduct()
       iterator += 1
@@ -990,7 +1296,7 @@ private struct FigletBuilder {
       productQueue.append(buffer)
     }
 
-    return formatRows()
+    return FigletSurface(rows: formatRows())
   }
 
   private mutating func addCurrentCharacterToProduct() throws {
@@ -1033,19 +1339,15 @@ private struct FigletBuilder {
     previousCharacterWidth = currentCharacterWidth
   }
 
-  private func formatProduct(_ rows: [String]) -> String {
-    rows.joined(separator: "\n") + (rows.isEmpty ? "" : "\n")
-  }
-
-  private func formatRows() -> [String] {
+  private func formatRows() -> [[FigletCell]] {
     productQueue.flatMap { replaceHardBlanks(in: justify($0)) }
   }
 
-  private func glyph(at index: Int) -> [String]? {
+  private func glyph(at index: Int) -> FigletGlyph? {
     guard index >= 0, index < text.count else {
       return nil
     }
-    return font.characters[text[index]]
+    return font.glyphs[text[index]]
   }
 
   private func glyphWidth(at index: Int) -> Int? {
@@ -1055,35 +1357,33 @@ private struct FigletBuilder {
     return font.widths[text[index]]
   }
 
-  private func smushedLeftCharacter(at position: Int, in left: String) -> (Character, Int)? {
+  private func smushedLeftCell(at position: Int, in left: [FigletCell]) -> (FigletCell, Int)? {
     let index = left.count - maxSmush + position
-    let characters = Array(left)
-    guard index >= 0, index < characters.count else {
+    guard index >= 0, index < left.count else {
       return nil
     }
-    return (characters[index], index)
+    return (left[index], index)
   }
 
-  private mutating func addGlyphRow(_ glyph: [String], row: Int) {
+  private mutating func addGlyphRow(_ glyph: FigletGlyph, row: Int) {
     var left = buffer[row]
-    var right = glyph[row]
+    var right = glyph.rows[row]
 
     if direction == .rightToLeft {
       swap(&left, &right)
     }
 
     for position in 0..<maxSmush {
-      let leftEntry = smushedLeftCharacter(at: position, in: left)
-      let rightCharacters = Array(right)
-      let rightCharacter = rightCharacters[position]
-      let merged = smush(left: leftEntry?.0, right: rightCharacter)
+      let leftEntry = smushedLeftCell(at: position, in: left)
+      let rightCell = right[position]
+      let merged = smushedCell(left: leftEntry?.0, right: rightCell)
 
       if let merged, let leftIndex = leftEntry?.1 {
-        left = left.replacingCharacter(at: leftIndex, with: merged)
+        left[leftIndex] = merged
       }
     }
 
-    buffer[row] = left + String(Array(right).dropFirst(maxSmush))
+    buffer[row] = left + Array(right.dropFirst(maxSmush))
   }
 
   private mutating func handleNewline() {
@@ -1099,35 +1399,42 @@ private struct FigletBuilder {
   }
 
   private mutating func resetBuffer() {
-    buffer = Array(repeating: "", count: font.height)
+    buffer = Array(repeating: [], count: font.height)
     blankMarkers.removeAll(keepingCapacity: true)
     previousCharacterWidth = 0
     currentCharacterWidth = 0
     maxSmush = 0
   }
 
-  private func justify(_ buffer: [String]) -> [String] {
+  private func justify(_ buffer: [[FigletCell]]) -> [[FigletCell]] {
     switch justification {
     case .left:
       return buffer
     case .right:
       return buffer.map { row in
-        String(repeating: " ", count: max(0, width - row.count - 1)) + row
+        Array(repeating: FigletCell.space, count: max(0, width - row.count - 1)) + row
       }
     case .center:
       return buffer.map { row in
-        String(repeating: " ", count: max(0, (width - row.count) / 2)) + row
+        Array(repeating: FigletCell.space, count: max(0, (width - row.count) / 2)) + row
       }
     }
   }
 
-  private func replaceHardBlanks(in buffer: [String]) -> [String] {
+  private func replaceHardBlanks(in buffer: [[FigletCell]]) -> [[FigletCell]] {
     buffer.map { row in
-      row.replacingCharacters(matching: font.hardBlank, with: " ")
+      row.map { cell in
+        guard cell.character == font.hardBlank else {
+          return cell
+        }
+        var replacement = cell
+        replacement.character = " "
+        return replacement
+      }
     }
   }
 
-  private func smushAmount(buffer: [String], glyph: [String]) -> Int {
+  private func smushAmount(buffer: [[FigletCell]], glyph: FigletGlyph) -> Int {
     let smushOrKern = smushMode(.smush) || smushMode(.kern)
     guard smushOrKern else {
       return 0
@@ -1137,13 +1444,13 @@ private struct FigletBuilder {
 
     for row in 0..<font.height {
       var leftLine = buffer[row]
-      var rightLine = glyph[row]
+      var rightLine = glyph.rows[row]
       if direction == .rightToLeft {
         swap(&leftLine, &rightLine)
       }
 
-      let leftCharacters = Array(leftLine)
-      let rightCharacters = Array(rightLine)
+      let leftCharacters = leftLine.map(\.character)
+      let rightCharacters = rightLine.map(\.character)
 
       let lastNonSpaceIndex = leftCharacters.lastIndex(where: { $0 != " " }) ?? 0
       let leftCharacter =
@@ -1266,6 +1573,22 @@ private struct FigletBuilder {
     return nil
   }
 
+  private func smushedCell(left: FigletCell?, right: FigletCell) -> FigletCell? {
+    guard let mergedCharacter = smush(left: left?.character, right: right.character) else {
+      return nil
+    }
+
+    if let left, mergedCharacter == left.character {
+      var mergedCell = left
+      mergedCell.character = mergedCharacter
+      return mergedCell
+    }
+
+    var mergedCell = right
+    mergedCell.character = mergedCharacter
+    return mergedCell
+  }
+
   private func smushMode(_ mode: SmushMode) -> Bool {
     (font.smushMode & mode.rawValue) != 0
   }
@@ -1295,6 +1618,13 @@ private func renderedRows(from rawValue: String) -> [String] {
 }
 
 private func measureRows(_ rows: [String]) -> FigletSize {
+  FigletSize(
+    width: rows.map(\.count).max() ?? 0,
+    height: rows.count
+  )
+}
+
+private func measureCellRows(_ rows: [[FigletCell]]) -> FigletSize {
   FigletSize(
     width: rows.map(\.count).max() ?? 0,
     height: rows.count
@@ -1521,27 +1851,12 @@ extension String {
     return String(characters[start..<end])
   }
 
-  fileprivate func replacingCharacter(at index: Int, with replacement: Character) -> String {
-    var characters = Array(self)
-    guard characters.indices.contains(index) else {
-      return self
-    }
-    characters[index] = replacement
-    return String(characters)
-  }
-
   fileprivate func trimmingTrailingWhitespaceAndNewlines() -> String {
     var value = self
     while let last = value.last, last.isFigletWhitespaceOrNewline {
       value.removeLast()
     }
     return value
-  }
-
-  fileprivate func replacingCharacters(matching target: Character, with replacement: Character)
-    -> String
-  {
-    String(map { $0 == target ? replacement : $0 })
   }
 
   fileprivate var lastPathComponentWithoutExtension: String {
