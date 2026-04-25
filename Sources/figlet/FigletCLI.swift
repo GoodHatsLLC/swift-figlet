@@ -241,6 +241,25 @@ private let helpText = """
     -l, --list-fonts                        List bundled fonts
     -i, --info-font                         Print font comment metadata
     -h, --help                              Show this help
+
+  Fonts:
+    Supported formats (extension is optional when referencing by name):
+      .flf    FIGfont — the canonical figlet format
+      .tlf    TOIlet Lite Font — FIGfont with Unicode and ANSI color
+      .tdf    TheDraw Font — legacy DOS color block font
+
+    Lookup order for -f NAME:
+      1. NAME treated as a file path (with or without extension)
+      2. Fonts bundled into this binary (see --list-fonts)
+      3. Search directories, first match wins:
+           $SWIFT_FIGLET_FONT_DIRS   colon-separated list of directories
+           $SWIFT_FIGLET_FONT_DIR    single directory
+           ~/.figfonts/              per-user font directory
+           ./figfonts/               relative to current working directory
+
+    To install a custom font, drop a .flf, .tlf, or .tdf file into
+    ~/.figfonts/ (creating it if needed) and reference it by basename,
+    e.g. `figlet -f doom hello` for ~/.figfonts/doom.flf.
   """
 
 extension String {
